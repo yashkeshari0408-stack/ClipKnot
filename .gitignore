@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.env
+node_modules/
+**/venv/
+
+# Generated / large pipeline data — never commit these (regenerable, large)
+data/raw/
+data/chunks/
+data/transcripts/
+data/qdrant_storage/
+*.log
+CLAUDE.md
