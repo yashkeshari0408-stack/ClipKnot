@@ -11,4 +11,8 @@ data/transcripts/
 data/qdrant_storage/
 *.log
 frontend/.env.local
+docs/Progress.md
+docs/learnings.md
+doc/media_ai_pipeline_roadmap_v2.md
+docs/clipknot_stage1_spec.md
 CLAUDE.md
