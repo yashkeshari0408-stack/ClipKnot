@@ -10,4 +10,5 @@ data/chunks/
 data/transcripts/
 data/qdrant_storage/
 *.log
+frontend/.env.local
 CLAUDE.md
