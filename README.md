@@ -117,3 +117,14 @@ ClipKnot/
 ├── docs/         spec, roadmap, ADRs, learnings
 └── data/         (gitignored) audio, transcripts, vector store
 ```
+
+
+
+to start the backend 
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --port 8000
+
+
+then 
+http://localhost:8000/docs
+ or 
+ http://localhost:8000/search?q= ur_query

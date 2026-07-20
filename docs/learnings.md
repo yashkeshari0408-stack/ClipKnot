@@ -88,3 +88,67 @@ Doing only one breaks the pipeline: skip transport chunking and long videos sile
 Renamed the project to ClipKnot cosmetically (docs, README, logger names) but **kept the Qdrant collection name as `clipsutra_chunks`** — the current 73 vectors are from noisy Hindi ASR and will be rebuilt with Sarvam at Stage 2, so the collection re-indexes anyway then. Renaming the collection now would mean re-indexing twice; the rename is free at the Stage 2 re-index. `COLLECTION_NAME` in `index.py` and the spec's collection line are intentionally left as `clipsutra_chunks` until then.
 
 ---
+
+## Sarvam gives no per-segment confidence — the gate can't threshold Sarvam output
+**Date:** 2026-07-15 · **Stage:** 2 · **Status:** measured from SDK source (sarvamai 0.1.28)
+
+**Question:** Can the Stage 2 confidence gate treat Sarvam segments the same as Groq segments?
+
+**Answer:** No. Read directly from the installed SDK, Sarvam's `SpeechToTextResponse` has `transcript`, word-level `timestamps` (`words[]` / `start_time_seconds[]` / `end_time_seconds[]`), `language_code`, and `language_probability` — and **nothing else confidence-shaped**. There is no `avg_logprob` and no `no_speech_prob` equivalent at any granularity. `language_probability` is the only signal, it's whole-file (not per-segment), and per its own docstring it goes `null` the moment you pass an explicit `language_code`. Two consequences: (1) `transcribe_sarvam_batch` emits `avg_logprob: None` + `no_speech_prob: None` + `confidence_source: "sarvam_none"` per segment rather than a fake `0.0` — a fabricated 0.0 reads as maximal confidence and would silently blind the gate on exactly the Hindi audio we most doubt; (2) merge.py now preserves a present-but-`None` logprob as `None` (distinguishing it from a missing key, which still defaults to Groq's `0.0`). The gate (priority #2, not yet built) must **branch on `confidence_source`**: threshold Groq segments on avg_logprob/no_speech_prob as planned, but bypass Sarvam segments or apply a separate non-numeric policy. There is no number to threshold.
+
+Caveat still open: the SDK models use pydantic `extra="allow"`, so the *actual* downloaded batch JSON could carry undocumented fields. The schema guarantees none; only a real job (deferred to the deliberate re-transcribe step) can confirm.
+
+**Transferable lesson:** A provider swap is not just the input/output *shape* — it's the *semantics* of every field. Two ASR engines can both "return segments with confidence" while one exposes a per-segment logprob and the other exposes nothing comparable. Verify field-by-field against the SDK source, and when a field genuinely doesn't exist, represent the absence explicitly (`None` + a source marker) so downstream code can detect and branch on it — never paper over the gap with a default that happens to type-check but lies about confidence.
+
+**Links:** ADR-001, ADR-010 (confidence gate), ADR-012 (Stage 2 re-index)
+
+---
+## The Sarvam investigation's real finding: window size, not ASR, was the cap
+Date: 2026-07 · Stage: 2 · Status: Stage 2 priorities rewritten (stage2_spec_v2.md)
+
+Q: After finally getting a fair, confound-free Sarvam-vs-Groq comparison on
+real production pipeline output — was Sarvam worth adopting for retrieval?
+
+A: No — engine choice moved scores by ~0.009 mean (noise-level at n=3), even
+though Sarvam's transcripts were visibly, measurably cleaner (317 properly
+punctuated sentences vs Groq's 2 unpunctuated blobs on the same 36-min video).
+A follow-up controlled test (tight ~4-sentence windows vs the wide 45s
+production windows, both engines, same transcripts) found the real lever:
++0.017 mean lift, IDENTICAL for both engines. This confirms — independently
+corroborating an earlier sliding-window spike from weeks prior — that semantic
+dilution from oversized windows, not ASR quality, was capping relevance.
+
+Consequence: Stage 2's priority order inverted. Chunker window-tuning (cheap,
+engine-agnostic) is now priority #1. Sarvam is rescoped from a Stage 2
+retrieval fix to a Stage 4 editorial-readability input — a different, real,
+but separate justification.
+
+Transferable lesson: a plausible root-cause diagnosis (ADR-010 originally:
+"noisy ASR caps relevance") can survive a first round of gate-telemetry
+evidence (clean audio) and STILL be wrong, because the diagnosis itself was
+never directly tested against the alternative (window size) until the
+alternative was specifically isolated. "Not disproven yet" isn't "confirmed."
+The fix: when a hypothesis has a cheap, controlled test available (here:
+hold transcripts constant, vary window size — or vice versa), run it before
+committing weeks of integration work (Sarvam Batch API, router, language
+tagging) to the assumed fix. The integration work wasn't wasted — Sarvam is
+still valuable, just for a different reason than assumed — but the sequencing
+would have been cheaper the other way around.
+
+Links: ADR-010 (updated), ADR-001 (Sarvam scope narrowed), stage2_spec_v2.md
+
+------
+**Cost note:** Sarvam's free tier is far more constrained than Groq's — 100
+credits total on a free account, and this investigation alone consumed ~70
+of them (4 batch jobs on one 36-min video). Groq's free tier (2,000 req/day,
+7,200 audio-sec/hour) supports this kind of exploratory testing comfortably;
+Sarvam's does not. This matters for the Stage 4 decision: routing Hindi
+content to Sarvam at any real volume will hit the credit ceiling fast, so
+adopting it later means either a paid tier or reserving Sarvam only for
+final/production transcription — not for iterative testing the way Groq
+was used throughout this project.
+-------
+
+ the same "test the borrowed heuristic before trusting it" lesson — ADR-010's thresholds were reasonable priors (standard Whisper QC heuristics) that turned out partially wrong for a different language than they were likely tuned on, caught only by eyeballing real flagged text rather than trusting the flag counts alone.
+ --------------------------
+ 

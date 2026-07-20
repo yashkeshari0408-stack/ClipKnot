@@ -40,6 +40,13 @@ Validate that transcript search is genuinely useful, then progressively add the 
 
 ## Stage 2 — Async Jobs + Real-World Audio
 
+
+> ⚠️ SUPERSEDED BY docs/stage2_spec.md — Stage 1 evidence reordered these
+> priorities (Sarvam first, enhancement last, not as originally sequenced
+> below). This section is kept for historical context only.
+
+[...existing content stays as-is...]
+
 **Async:** `jobs` table in Postgres (pending → processing → completed/failed), background worker process polls it. API returns a job ID immediately; UI shows status.
 
 **Audio reality (reinstated from v1 — core differentiator):**

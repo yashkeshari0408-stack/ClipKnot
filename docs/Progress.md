@@ -163,4 +163,11 @@ The Vector Database: Qdrant.
 To keep this light and rapid, we will use the official FastEmbed engine created by Qdrant. It runs quantized BGE-M3 inside a highly optimized CPU ONNX container. It takes up less than 150MB of memory and executes vector generations almost instantaneously.
 
 Qdrant allows you to initialize an In-Memory / Local Disk Client directly through your Python script. It saves a simple, lightweight binary storage block inside your workspace (data/qdrant_storage), keeping things entirely self-contained
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# PHASE 2 
+
+
+
+
 
