@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import csv
+import argparse
 import subprocess
 from typing import Optional
 import yt_dlp
@@ -27,11 +28,16 @@ def extract_youtube_id(url: str) -> Optional[str]:
         except Exception:
             return None
 
-def ingest_and_convert(url: str) -> dict:
+def ingest_and_convert(url: str, language: str = "en") -> dict:
     """
     [Step 1 & 2 Combined]
     Downloads YouTube audio, downsamples it to 16kHz mono FLAC via FFmpeg,
     applies an 80Hz highpass filter, and records metadata. Completely idempotent.
+
+    `language` is a caller-supplied tag written into the metadata contract; the
+    transcription router reads it to pick the ASR engine (e.g. "hi" -> Sarvam,
+    "en" -> Groq). We record it at ingest rather than auto-detecting, which would
+    cost a wasted transcription call. Defaults to "en".
     """
     start_time = time.time()
     video_id = extract_youtube_id(url)
@@ -91,7 +97,8 @@ def ingest_and_convert(url: str) -> dict:
             "title": info_dict.get("title"),
             "channel": info_dict.get("uploader"),
             "duration_s": info_dict.get("duration"),
-            "upload_date": info_dict.get("upload_date")
+            "upload_date": info_dict.get("upload_date"),
+            "language": language
         }
         
         with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -112,7 +119,19 @@ def ingest_and_convert(url: str) -> dict:
         return {"status": "error", "message": f"System error: {str(e)}"}
 
 if __name__ == "__main__":
-    logger.info(f"Evaluating dataset source list at: {CSV_PATH}")
+    parser = argparse.ArgumentParser(
+        description="Ingest YouTube audio -> 16kHz mono FLAC + metadata contract."
+    )
+    parser.add_argument(
+        "--language",
+        default="en",
+        help="Language tag written into each video's metadata; the transcription "
+             "router uses it to pick the ASR engine (e.g. 'hi' -> Sarvam). "
+             "Applies to every URL in this run. Default: en.",
+    )
+    args = parser.parse_args()
+
+    logger.info(f"Evaluating dataset source list at: {CSV_PATH} (language='{args.language}')")
     if os.path.exists(CSV_PATH):
         with open(CSV_PATH, mode='r', encoding='utf-8') as f:
             reader = csv.reader(f)
@@ -122,7 +141,7 @@ if __name__ == "__main__":
                     continue
                 target_url = row[0].strip()
                 logger.info(f"Processing target from CSV: {target_url}")
-                result = ingest_and_convert(target_url)
+                result = ingest_and_convert(target_url, language=args.language)
                 print(json.dumps(result, indent=2))
     else:
         logger.error("Source list 'videos_urls.csv' is missing from data/sample/. Aborting.")
