@@ -12,6 +12,11 @@ TRANSCRIPTS_DIR = os.path.join(PROJECT_ROOT, "data", "transcripts")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ClipKnot.Merge")
 
+# Stage 2 confidence gate (ADR-010). avg_logprob is the ONLY threshold for now —
+# no_speech_prob and compression_ratio were dropped: on this video they flagged
+# 166/299 segments (crosstalk-heavy false positives) vs 9 for avg_logprob alone.
+GATE_LOGPROB_THRESHOLD = -1.0
+
 def merge_video_transcripts(video_id: str) -> dict:
     """
     [Phase A - Step 7 Merge]
@@ -59,12 +64,27 @@ def merge_video_transcripts(video_id: str) -> dict:
             absolute_start = round(float(seg.get("start", 0.0)) + offset_sec, 2)
             absolute_end = round(float(seg.get("end", 0.0)) + offset_sec, 2)
             
+            # Distinguish a MISSING key from an explicit None. Groq segments carry a
+            # real avg_logprob (missing-key fallback -> 0.0). Sarvam segments set it to
+            # None on purpose (no logprob exists) — coercing that to 0.0 would make them
+            # read as maximally confident and silently blind the Stage 2 gate. So a
+            # present-but-None value is preserved as None, not rounded.
+            raw_logprob = seg.get("avg_logprob", 0.0)
+            avg_logprob = None if raw_logprob is None else round(float(raw_logprob), 4)
+
+            # Confidence gate: flag only Groq segments below the logprob threshold.
+            # Sarvam segments carry avg_logprob=None (confidence_source "sarvam_none")
+            # and bypass the gate entirely — a None logprob can never satisfy the
+            # comparison, so they stay flagged=False without a special-case branch.
+            flagged = avg_logprob is not None and avg_logprob < GATE_LOGPROB_THRESHOLD
+
             merged_segments.append({
                 "start_s": absolute_start,
                 "end_s": absolute_end,
                 "text": seg.get("text", "").strip(),
-                "avg_logprob": round(float(seg.get("avg_logprob", 0.0)), 4),
-                "flagged": False,   # Gate flags default to false in Phase A
+                "avg_logprob": avg_logprob,
+                "confidence_source": seg.get("confidence_source", "groq"),  # gate branches on this
+                "flagged": flagged,   # avg_logprob < -1.0 (Groq only); no retry logic yet
                 "retried": False
             })
 

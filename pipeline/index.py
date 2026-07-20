@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import uuid
@@ -12,28 +13,41 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CHUNKS_DIR = os.path.join(PROJECT_ROOT, "data", "chunks")
 RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
-QDRANT_PATH = os.path.join(PROJECT_ROOT, "data", "qdrant_storage")
+
+# config.py is the single source of truth for the values that MUST match between
+# indexing and search — COLLECTION_NAME / MODEL_NAME / VECTOR_SIZE / QDRANT_URL +
+# QDRANT_API_KEY (ADR-014). Import them rather than hardcoding, so index.py and the backend can never
+# drift onto different collections or models. (These were previously hardcoded here,
+# which silently defeated config.py — updating config alone wouldn't redirect indexing.)
+sys.path.insert(0, PROJECT_ROOT)
+from shared import config  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ClipKnot.Index")
 
-COLLECTION_NAME = "clipsutra_chunks"
-# BGE-M3 via sentence-transformers, NOT FastEmbed's models.Document auto-embed path:
-# FastEmbed 0.8.0 doesn't package bge-m3 ("not found among supported models"). We
-# benchmarked m3 through sentence-transformers and proved it loads (~103s) and encodes
-# (~2s/chunk) locally, so we embed here and hand Qdrant raw 1024-dim float vectors.
-MODEL_NAME = "BAAI/bge-m3"
+QDRANT_URL = config.QDRANT_URL
+QDRANT_API_KEY = config.QDRANT_API_KEY
+COLLECTION_NAME = config.COLLECTION_NAME
+# BGE-M3 via sentence-transformers, NOT FastEmbed (0.8.0 doesn't package bge-m3 —
+# "not found among supported models"). We embed here and hand Qdrant raw 1024-dim
+# float vectors. Model name also comes from config so query/document embeddings match.
+MODEL_NAME = config.MODEL_NAME
 
 
-def index_semantic_windows():
+def index_semantic_windows(video_id: str | None = None):
     """
     [Phase A - Step 9 Embed and Index]
     Embeds semantic windows with BGE-M3 (sentence-transformers) and upserts them
     into local Qdrant. Idempotent: deterministic UUID5 point IDs mean re-running the
     same window overwrites its point instead of creating a duplicate.
+
+    video_id=None  -> batch: index every *_semantic.json (unchanged default, used by
+                      __main__ and the Stage-1 re-index).
+    video_id="xyz" -> index only that one video's semantic file (used by the async
+                      worker so a single job doesn't re-embed the whole corpus).
     """
-    logger.info(f"Connecting to Qdrant Local Storage at: {QDRANT_PATH}")
-    client = QdrantClient(path=QDRANT_PATH)
+    logger.info(f"Connecting to Qdrant Cloud at: {QDRANT_URL}")
+    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
     # 1. Enforce explicit collection schema definition.
     # BGE-M3 emits exactly 1024 dimensions; rank with Cosine similarity.
@@ -42,17 +56,25 @@ def index_semantic_windows():
         client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=models.VectorParams(
-                size=1024,
+                size=config.VECTOR_SIZE,
                 distance=models.Distance.COSINE
             ),
         )
 
     # 2. Scan for generated semantic window JSON structures.
     # Check BEFORE loading the model — the load is ~103s; don't pay it to find nothing.
-    semantic_files = glob.glob(os.path.join(CHUNKS_DIR, "*_semantic.json"))
-    if not semantic_files:
-        logger.warning("No semantic window files discovered inside data/chunks. Run chunker.py first.")
-        return
+    if video_id is not None:
+        # Single-video path: target exactly one file, don't glob the corpus.
+        one_path = os.path.join(CHUNKS_DIR, f"{video_id}_semantic.json")
+        semantic_files = [one_path] if os.path.exists(one_path) else []
+        if not semantic_files:
+            logger.warning(f"No semantic window file for '{video_id}' at {one_path}. Run chunker.py first.")
+            return
+    else:
+        semantic_files = glob.glob(os.path.join(CHUNKS_DIR, "*_semantic.json"))
+        if not semantic_files:
+            logger.warning("No semantic window files discovered inside data/chunks. Run chunker.py first.")
+            return
 
     # Load the embedding model ONCE, outside the per-video loop (~103s; never repeat per video).
     load_start = time.time()

@@ -12,6 +12,13 @@ CHUNKS_DIR = os.path.join(PROJECT_ROOT, "data", "chunks")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ClipKnot.Chunker")
 
+# Tight sliding-window shape — mirrors tight_windows(size=4, step=2) from the
+# tight-vs-wide A/B (stage2_spec.md priority #1). SIZE segments per window, advance
+# by STEP => overlap = SIZE - STEP = 2 segments. Replaces the former ~30-45s duration
+# target, which produced semantically diluted (blurry) windows that capped relevance.
+WINDOW_SIZE = 4
+WINDOW_STEP = 2
+
 def build_semantic_windows(video_id: str) -> dict:
     """
     [Phase A - Step 8 Semantic Windowing]
@@ -33,40 +40,24 @@ def build_semantic_windows(video_id: str) -> dict:
         return {"status": "skipped", "message": "Empty segment array"}
 
     semantic_windows = []
-    i = 0
     total_segments = len(segments)
 
-    logger.info(f"Assembling sliding contextual text windows for video: {video_id}")
+    logger.info(f"Assembling tight sliding text windows for video: {video_id}")
 
-    # Slide across all segments using lookahead accumulation loop
-    while i < total_segments:
-        window_segments = []
-        current_duration = 0.0
-        
-        # Start anchoring positions
-        window_start_s = segments[i]["start_s"]
-        
-        # Accumulate segments until window targets (~30-60s) are met
-        j = i
-        while j < total_segments:
-            seg = segments[j]
-            window_segments.append(seg)
-            window_end_s = seg["end_s"]
-            current_duration = window_end_s - window_start_s
-            
-            # Break if adding more text exceeds our maximum semantic boundary
-            if current_duration >= 45.0 or (current_duration >= 30.0 and j - i >= 3):
-                break
-            j += 1
-            
-        # If lookahead hit terminal file boundaries, clamp the indices securely
-        if j >= total_segments:
-            j = total_segments - 1
-            window_end_s = segments[j]["end_s"]
+    # Fixed segment-count sliding window (SIZE=4, STEP=2 => 2-segment overlap),
+    # mirroring the tight_windows shape that scored best in the A/B. Each window's
+    # timestamps are inherited directly from its member segments (already absolute
+    # post-merge), so the output contract — start_s / end_s / duration_s / text —
+    # is unchanged; this is a windowing-parameter change, not a schema change.
+    for i in range(0, total_segments, WINDOW_STEP):
+        window_segments = segments[i:i + WINDOW_SIZE]
+        if not window_segments:
+            break
 
-        # Synthesize the text payload paragraph contract
-        combined_text = " ".join([s["text"] for s in window_segments])
-        
+        window_start_s = window_segments[0]["start_s"]
+        window_end_s = window_segments[-1]["end_s"]
+        combined_text = " ".join(s["text"] for s in window_segments if s.get("text"))
+
         semantic_windows.append({
             "window_index": len(semantic_windows),
             "start_s": round(window_start_s, 2),
@@ -75,10 +66,10 @@ def build_semantic_windows(video_id: str) -> dict:
             "text": combined_text
         })
 
-        # CRITICAL RULE: Advance step index with exactly 1-segment tracking overlap
-        # This guarantees contextual continuity across window frames
-        advance_step = max(1, j - i)
-        i += advance_step
+        # Stop once this window already reaches the final segment — mirrors the A/B
+        # script's `if i + size >= n: break`, avoiding redundant tail windows.
+        if i + WINDOW_SIZE >= total_segments:
+            break
 
     # Save output dataset contract package securely to disk
     with open(output_semantic_path, 'w', encoding='utf-8') as out_f:

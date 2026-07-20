@@ -25,3 +25,21 @@ In Stage 1, handle mild noise with light, cheap measures plus output-side checki
 
 ## Notes
 Suggested starting thresholds: no_speech_prob > 0.6 (drop/flag), avg_logprob < -1.0 (flag), compression_ratio > 2.4 (likely repetition/hallucination, flag).
+
+## Update: ASR engine was NOT the primary relevance cap (tested, not assumed)
+Two controlled experiments on real production pipeline output (same video, same
+BGE-M3, same queries) directly tested this ADR's implicit premise:
+- Clean Sarvam transcripts vs garbled Groq transcripts: ~0.009 mean difference
+  (noise-level, n=3).
+- Tight windows vs wide windows, SAME transcripts, BOTH engines: +0.017 mean
+  lift, identical for both — confirming window size, not ASR quality, as the
+  shared cap.
+Correction to this ADR's original diagnosis: the 0.42–0.54 ceiling was
+attributed to "garbled Hindi ASR." That attribution was itself untested at the
+time — reasonable given clear evidence of ASR errors, but wrong as the primary
+cause. The real lever is chunker window size (see stage2_spec_v2.md priority
+#1). Transcript quality (Sarvam's clean punctuation) remains valuable, but for
+readability/editorial use (Stage 4), not retrieval ranking.
+
+### update 
+"Empirically tested on 299 real Hindi segments: no_speech_prob and compression_ratio are miscalibrated for Devanagari (92% and high false-positive rates respectively) — likely English-Whisper-tuned heuristics that don't transfer. Only avg_logprob < -1.0 generalizes; gate uses this alone. Revisit no_speech_prob/compression_ratio if more Hindi videos suggest a Devanagari-calibrated threshold exists."
